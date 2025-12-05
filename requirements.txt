@@ -2,6 +2,6 @@ fastapi
 uvicorn[standard]
 python-telegram-bot==20.8
 groq
-supabse
+supabase==2.9.0
 python-dotenv
 pydantic
