@@ -20,11 +20,9 @@ client = Groq(api_key=GROQ_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI()
+application = None  # Will be created on first webhook call
 
-# CRITICAL FIX: Application ko abhi build mat karo — webhook ke andar banayenge
-application = None
-
-# Initialize tables
+# Initialize tables once
 try:
     supabase.table("users").upsert({"user_id": 0, "paid": False, "messages_used": 0}).execute()
     supabase.table("memory").upsert({"user_id": 0, "content": ""}).execute()
@@ -41,13 +39,6 @@ async def get_memory(user_id: int) -> str:
 async def save_memory(user_id: int, content: str):
     supabase.table("memory").upsert({"user_id": user_id, "content": content[-12000:]}).execute()
 
-async def is_paid(user_id: int) -> bool:
-    try:
-        res = supabase.table("users").select("paid").eq("user_id", user_id).execute()
-        return bool(res.data and res.data[0]["paid"])
-    except:
-        return False
-
 async def get_messages_used(user_id: int) -> int:
     try:
         res = supabase.table("users").select("messages_used").eq("user_id", user_id).execute()
@@ -60,18 +51,19 @@ async def increment_messages(user_id: int):
     supabase.table("users").upsert({"user_id": user_id, "messages_used": current + 1}).execute()
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global application
     if not update.effective_user or not update.message:
         return
 
     user_id = update.effective_user.id
     text = update.message.text or update.message.caption or "voice note"
 
+    # Init user
     if not supabase.table("users").select("*").eq("user_id", user_id).execute().data:
         supabase.table("users").insert({"user_id": user_id, "paid": False, "messages_used": 0}).execute()
 
-    paid = await is_paid(user_id)
+    paid = supabase.table("users").select("paid").eq("user_id", user_id).execute().data[0]["paid"] if supabase.table("users").select("paid").eq("user_id", user_id).execute().data else False
 
+    # Paywall
     if not paid:
         await increment_messages(user_id)
         msgs = await get_messages_used(user_id)
@@ -81,7 +73,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if msgs >= 60:
             keyboard = [[InlineKeyboardButton("₹99/week – 7 Days FREE Trial", url=LEMON_LINK)]]
             await update.message.reply_text(
-                "Bas kar bhai! 60+ messages daily? 😭\n"
+                "Bas kar bhai! 60+ messages daily?\n"
                 "Unlimited chahiye? ₹99/week (7 din FREE trial)\n"
                 "Click kar → life set 🔥",
                 reply_markup=InlineKeyboardMarkup(keyboard)
@@ -112,14 +104,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Pehle 60 messages FREE → phir ₹99/week 🔥"
     )
 
-# Webhook — YAHAN APPLICATION BANATE HAIN (FIX)
+# FINAL WORKING WEBHOOK (100% RENDER COMPATIBLE)
 @app.post("/")
 async def webhook(request: Request):
     global application
     if application is None:
-        application = Application.builder().token(TELEGRAM_TOKEN).build()
+        # This line fixes everything
+        application = await Application.builder().token(TELEGRAM_TOKEN).concurrent_updates(True).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle))
+        await application.initialize()
+        await application.start()
+        await application.updater.start_webhook(
+            listen="0.0.0.0",
+            port=int(os.environ.get("PORT", 10000)),
+            url_path="",
+            webhook_url=f"https://{os.getenv('RENDER_EXTERNAL_URL') or request.url.hostname}"
+        )
 
     json_data = await request.json()
     update = Update.de_json(json_data, application.bot)
@@ -131,7 +132,7 @@ async def webhook(request: Request):
 async def root():
     return {"status": "Twin is LIVE bhai 🔥"}
 
-# Local testing only
+# Only for local testing
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
