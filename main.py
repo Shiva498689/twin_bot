@@ -14,13 +14,17 @@ TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN", "")
 GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
-LEMON_LINK: str = os.getenv("LEMON_LINK", "https://google.com")  # temporary fallback
+LEMON_LINK: str = os.getenv("LEMON_LINK", "https://google.com")
 
 client = Groq(api_key=GROQ_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI()
 application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+# Initialize tables
+supabase.table("users").upsert({"user_id": 0, "paid": False, "messages_used": 0}).execute()
+supabase.table("memory").upsert({"user_id": 0, "content": ""}).execute()
 
 async def get_memory(user_id: int) -> str:
     try:
@@ -66,7 +70,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         supabase.table("users").insert({"user_id": user_id, "paid": False, "messages_used": 0}).execute()
 
     paid = await is_paid(user_id)
-    memory = await get_memory(user_id)
 
     # Gentle paywall
     if not paid:
@@ -74,42 +77,37 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         messages_used = await get_messages_used(user_id)
 
         if messages_used == 30:
-            await update.message.reply_text("Bhai 30 messages already! 🔥 Tu toh pro user ban gaya 😎")
+            await update.message.reply_text("Bhai 30 messages already! Tu toh full addict ho gaya 😂")
             return
         if messages_used >= 60:
             keyboard = [[InlineKeyboardButton("₹99/week – 7 Days FREE Trial", url=LEMON_LINK)]]
             await update.message.reply_text(
                 "Bas kar bhai! Roz 60+ baar baat kar raha hai 😭\n"
-                "Unlimited + premium badge + voice replies chahiye?\n"
-                "₹99/week (7 din bilkul free trial) → click kar de 🔥",
+                "Unlimited chahiye? ₹99/week (7 din FREE trial)\n"
+                "Click kar de → life set 🔥",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
 
-    # Twin AI Magic
+    memory = await get_memory(user_id)
     system_prompt = f"""
 You are Twin — this user's 100% personality clone.
-Talk EXACTLY like them: same Hinglish, emojis, gaali, tone, sarcasm.
+Talk EXACTLY like them: same Hinglish, emojis, tone, sarcasm.
 Past chats: {memory[-3000:]}
 Never say "as an AI". Be their real twin.
     """.strip()
 
     completion = client.chat.completions.create(
         model="llama-3.1-70b-versatile",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text}
-        ],
+        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": text}],
         temperature=0.9,
         max_tokens=800
     )
 
     reply = completion.choices[0].message.content
-
     await save_memory(user_id, f"{memory}\nUser: {text}\nTwin: {reply}")
     await update.message.reply_text(reply)
 
-# /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Arre bhai! Main tera Twin hoon 😎\n"
@@ -117,10 +115,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Pehle 60 messages FREE → phir ₹99/week (7 din free trial) 🔥"
     )
 
-# Register handlers
+# Handlers
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle))
 
+# Webhook endpoint
 @app.post("/")
 async def webhook(request: Request) -> Response:
     json_data: dict[str, Any] = await request.json()
@@ -131,8 +130,9 @@ async def webhook(request: Request) -> Response:
 
 @app.get("/")
 async def health():
-    return {"status": "Twin is alive and ready to bakchodi"}
+    return {"status": "Twin is alive bhai 🔥"}
 
+# ←←← ONLY FOR LOCAL TESTING (Render ignores this) ←←←
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    uvicorn.run(app, host="0.0.0.0", port=8000)
