@@ -109,18 +109,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def webhook(request: Request):
     global application
     if application is None:
-        # This line fixes everything
         application = await Application.builder().token(TELEGRAM_TOKEN).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle))
-        await application.initialize()
-        await application.start()
-        await application.updater.start_webhook(
-            listen="0.0.0.0",
-            port=int(os.environ.get("PORT", 10000)),
-            url_path="",
-            webhook_url=f"https://{os.getenv('RENDER_EXTERNAL_URL') or request.url.hostname}"
-        )
 
     json_data = await request.json()
     update = Update.de_json(json_data, application.bot)
