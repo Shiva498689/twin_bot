@@ -5,29 +5,26 @@ from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandl
 from groq import Groq
 from supabase import create_client
 from dotenv import load_dotenv
-from typing import Any
 
 load_dotenv()
 
 # CONFIG
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+GROQ_KEY = os.getenv("GROQ_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 LEMON_LINK = os.getenv("LEMON_LINK", "https://google.com")
 
-client = Groq(api_key=GROQ_API_KEY)
+# Clients
+groq_client = Groq(api_key=GROQ_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI()
-application = None  # Will be created on first webhook call
+application = None  # Will be created once
 
-# Initialize tables once
-try:
-    supabase.table("users").upsert({"user_id": 0, "paid": False, "messages_used": 0}).execute()
-    supabase.table("memory").upsert({"user_id": 0, "content": ""}).execute()
-except:
-    pass
+# Simple memory & paywall
+async def save_memory(user_id: int, text: str):
+    supabase.table("memory").upsert({"user_id": user_id, "content": text[-10000:]}).execute()
 
 async def get_memory(user_id: int) -> str:
     try:
@@ -36,94 +33,69 @@ async def get_memory(user_id: int) -> str:
     except:
         return ""
 
-async def save_memory(user_id: int, content: str):
-    supabase.table("memory").upsert({"user_id": user_id, "content": content[-12000:]}).execute()
-
-async def get_messages_used(user_id: int) -> int:
-    try:
-        res = supabase.table("users").select("messages_used").eq("user_id", user_id).execute()
-        return res.data[0]["messages_used"] if res.data else 0
-    except:
-        return 0
-
-async def increment_messages(user_id: int):
-    current = await get_messages_used(user_id)
-    supabase.table("users").upsert({"user_id": user_id, "messages_used": current + 1}).execute()
+async def increment_msg(user_id: int):
+    current = supabase.table("users").select("msgs").eq("user_id", user_id).execute()
+    msgs = (current.data[0]["msgs"] if current.data else 0) + 1
+    supabase.table("users").upsert({"user_id": user_id, "msgs": msgs}).execute()
+    return msgs
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user or not update.message:
-        return
-
     user_id = update.effective_user.id
-    text = update.message.text or update.message.caption or "voice note"
+    text = update.message.text or "voice"
 
     # Init user
-    if not supabase.table("users").select("*").eq("user_id", user_id).execute().data:
-        supabase.table("users").insert({"user_id": user_id, "paid": False, "messages_used": 0}).execute()
+    if not supabase.table("users").select("user_id").eq("user_id", user_id).execute().data:
+        supabase.table("users").insert({"user_id": user_id, "msgs": 0}).execute()
 
-    paid = supabase.table("users").select("paid").eq("user_id", user_id).execute().data[0]["paid"] if supabase.table("users").select("paid").eq("user_id", user_id).execute().data else False
-
-    # Paywall
-    if not paid:
-        await increment_messages(user_id)
-        msgs = await get_messages_used(user_id)
-        if msgs == 30:
-            await update.message.reply_text("Bhai 30 messages ho gaye! Tu toh full addict hai 😂")
-            return
-        if msgs >= 60:
-            keyboard = [[InlineKeyboardButton("₹99/week – 7 Days FREE Trial", url=LEMON_LINK)]]
-            await update.message.reply_text(
-                "Bas kar bhai! 60+ messages daily?\n"
-                "Unlimited chahiye? ₹99/week (7 din FREE trial)\n"
-                "Click kar → life set 🔥",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return
+    msgs = await increment_msg(user_id)
+    if msgs == 30:
+        await update.message.reply_text("Bhai 30 messages ho gaye! 🔥")
+        return
+    if msgs >= 60:
+        keyboard = [[InlineKeyboardButton("₹99/week – 7 Days FREE", url=LEMON_LINK)]]
+        await update.message.reply_text("Bas kar bhai! Unlimited chahiye?\n₹99/week (7 din FREE trial)", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
 
     memory = await get_memory(user_id)
-    system = f"""You are Twin — this user's exact personality clone.
+    prompt = f"""You are Twin — exact clone of this user.
 Talk 100% like them: same Hinglish, emojis, tone.
-Past chats: {memory[-3000:]}
-Never say "I am an AI". Be their real twin."""
+Past: {memory[-2500:]}
+User says: {text}
+Reply in their style only."""
 
-    completion = client.chat.completions.create(
+    reply = groq_client.chat.completions.create(
         model="llama-3.1-70b-versatile",
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": text}],
+        messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}],
         temperature=0.9,
-        max_tokens=800
-    )
-    reply = completion.choices[0].message.content
+        max_tokens=600
+    ).choices[0].message.content
 
     await save_memory(user_id, f"{memory}\nUser: {text}\nTwin: {reply}")
     await update.message.reply_text(reply)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Arre bhai! Main tera Twin hoon 😎\n"
-        "Voice note bhej, Hinglish mein bakchodi kar — bilkul tere jaisa bolunga!\n"
-        "Pehle 60 messages FREE → phir ₹99/week 🔥"
-    )
+    await update.message.reply_text("Arre bhai! Main tera Twin hoon 😎\nJo bolega bilkul waise hi bolunga!\nPehle 60 messages FREE 🔥")
 
-# FINAL WORKING WEBHOOK (100% RENDER COMPATIBLE)
+# WEBHOOK — 100% WORKING FOR RENDER
 @app.post("/")
 async def webhook(request: Request):
     global application
     if application is None:
-        application = await Application.builder().token(TELEGRAM_TOKEN).build()
+        application = await Application.builder().token(TOKEN).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle))
 
-    json_data = await request.json()
-    update = Update.de_json(json_data, application.bot)
+    data = await request.json()
+    update = Update.de_json(data, application.bot)
     if update:
         await application.process_update(update)
     return Response(status_code=200)
 
 @app.get("/")
 async def root():
-    return {"status": "Twin is LIVE bhai 🔥"}
+    return {"status": "Twin is LIVE!"}
 
-# Only for local testing
+# Local only
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
