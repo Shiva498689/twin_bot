@@ -110,7 +110,7 @@ async def webhook(request: Request):
     global application
     if application is None:
         # This line fixes everything
-        application = await Application.builder().token(TELEGRAM_TOKEN).concurrent_updates(True).build()
+        application = await Application.builder().token(TELEGRAM_TOKEN).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle))
         await application.initialize()
